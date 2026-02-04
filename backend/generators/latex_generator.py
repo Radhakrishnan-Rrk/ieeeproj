@@ -975,6 +975,17 @@ email@example.com}
         if not caption:
             return ""
         
+        # === CRITICAL: Stop caption at first occurrence of another figure reference ===
+        # This prevents merged captions like "Caption for Fig 1... Fig. 2 shows..."
+        match = re.search(r'\b(Fig\.?\s*\d+|Figure\s*\d+)\s*(shows|depicts|illustrates|presents)', caption[10:], re.IGNORECASE)
+        if match:
+            # Truncate at the point where next figure is referenced
+            caption = caption[:10 + match.start()].strip()
+        
+        # === CRITICAL: Remove section headers that leaked into caption ===
+        # Patterns like "A. Classification..." or "D. Confusion Matrix"
+        caption = re.sub(r'\b[A-Z]\.\s+[A-Z][a-z]+\s+(of|for|with|Matrix|Method|Results|Analysis|Classification).*$', '', caption, flags=re.IGNORECASE)
+        
         # === FIX DUPLICATED FIG PATTERNS ===
         # Remove "Fig. 1. Fig. 1." -> "Fig. 1." (duplicated caption prefix)
         caption = re.sub(r'(Fig\.?\s*\d+\.?\s*)+', '', caption, flags=re.IGNORECASE)
@@ -982,6 +993,11 @@ email@example.com}
         # Remove "fig1", "fig 1" artifacts (lowercase/missing punctuation)
         caption = re.sub(r'fig\s*\d+\.?\s*', '', caption, flags=re.IGNORECASE)
         caption = re.sub(r'^ure\s*\d+\.?\s*', '', caption, flags=re.IGNORECASE) # partial "Figure" -> "ure"
+        
+        # === Remove Roman numeral section labels that leaked in ===
+        # E.g., "IV: ROC curves" -> "ROC curves"
+        caption = re.sub(r'^[IVX]+:?\s*', '', caption)
+        caption = re.sub(r'^[A-Z]\.\s*', '', caption)  # E.g., "D. Confusion Matrix" -> "Confusion Matrix"
         
         # === CRITICAL FIX: Remove known placeholder captions ===
         placeholder_patterns = [
@@ -993,8 +1009,10 @@ email@example.com}
             r'Insert\s*caption\.?',
             r'Figure\s*description\.?',
             r'Figure\s*illustration\.?',
+            r'Illustration showing the system architecture and workflow.*',  # Common placeholder
             r'^\s*\.\s*$',  # Just a period
             r'^\s*illustration\.?\s*$',  # Just "illustration"
+            r'\(Part\s*\d+\)\.?',  # Remove "(Part 6)." type suffixes
         ]
         
         for pattern in placeholder_patterns:
@@ -1010,6 +1028,15 @@ email@example.com}
         # Remove leading/trailing punctuation artifacts
         caption = caption.strip('.,;:-–—')
         caption = caption.strip()
+        
+        # Limit caption length to prevent very long merged captions
+        if len(caption) > 200:
+            # Find a good break point
+            sentences = caption.split('.')
+            if len(sentences) > 1:
+                caption = sentences[0].strip() + '.'
+            else:
+                caption = caption[:197] + '...'
         
         # Ensure caption ends with proper punctuation (period for IEEE)
         if caption and not caption.endswith(('.', '!', '?')):
@@ -1049,13 +1076,17 @@ email@example.com}
         if is_wide_table:
             latex.append(r'\small')
         
-        # IEEE style: TABLE in small caps, centered above table
-        # Clean caption - remove any existing "Table X" prefix
+        # IEEE style: TABLE in small caps with Roman numeral
+        # Clean caption - remove any existing "Table X" or "TABLE I" prefix to avoid redundancy
         clean_caption = re.sub(r'^(Table|TABLE)\s*[IVX\d]+\.?\s*[-:]?\s*', '', caption, flags=re.IGNORECASE)
+        # Also remove if caption starts with the description itself containing TABLE
+        clean_caption = re.sub(r'^TABLE\s*[IVX]+:?\s*', '', clean_caption, flags=re.IGNORECASE)
+        clean_caption = clean_caption.strip()
         
+        # IEEE Format: "TABLE I" on its own line, then caption below
+        # Or use caption command properly
         latex.extend([
-            # Use textsc for small caps TABLE and Roman numeral
-            f'\\caption{{\\textsc{{Table {table_num}:}} {clean_caption}}}',
+            f'\\caption{{TABLE {table_num}: {clean_caption}}}',
             f'\\label{{tab:{table.number}}}',
             r'\renewcommand{\arraystretch}{1.3}',  # More spacing for readability
             f'\\begin{{tabular}}{{{col_spec}}}',
@@ -1101,28 +1132,47 @@ email@example.com}
         """Determine column specification based on content"""
         specs = []
         
+        # Calculate total width available
+        if is_wide_table:
+            total_width = 0.95  # textwidth fraction for table*
+        else:
+            total_width = 0.95  # columnwidth fraction for regular table
+        
+        # Calculate proportional widths based on content
+        col_max_lengths = []
         for col_idx in range(num_cols):
             max_len = 0
             for row in rows:
                 if col_idx < len(row):
-                    # Calculate length after cleaning
                     cell = str(row[col_idx]).replace('\n', ' ')
                     max_len = max(max_len, len(cell))
-            
-            # For wide tables, use fixed width columns to fit
-            if is_wide_table:
-                if max_len < 15:
-                    specs.append('c')
-                elif max_len < 40:
-                    specs.append('p{1.5cm}')
-                else:
-                    specs.append('p{2.5cm}')
-            else:
-                # Use 'c' for short content, 'l' for longer text
+            col_max_lengths.append(max(max_len, 5))  # Minimum 5 chars
+        
+        total_chars = sum(col_max_lengths)
+        
+        for col_idx, max_len in enumerate(col_max_lengths):
+            if num_cols <= 3:
+                # For small tables, use simple centering
                 if max_len < 20:
                     specs.append('c')
                 else:
                     specs.append('l')
+            elif num_cols <= 5:
+                # For medium tables, use proportional p{} columns
+                width_frac = (max_len / total_chars) * total_width
+                width_frac = max(0.1, min(0.4, width_frac))  # Clamp between 10% and 40%
+                if is_wide_table:
+                    specs.append(f'p{{{width_frac:.2f}\\textwidth}}')
+                else:
+                    specs.append(f'p{{{width_frac:.2f}\\columnwidth}}')
+            else:
+                # For large tables (6+ columns), use smaller fixed widths
+                if max_len < 10:
+                    specs.append('c')
+                elif max_len < 25:
+                    specs.append('p{1.2cm}')
+                else:
+                    specs.append('p{2cm}')
         
         return ''.join(specs)
     
