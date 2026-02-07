@@ -231,25 +231,12 @@ class LaTeXGenerator:
             latex.append(r'\end{IEEEkeywords}')
             latex.append('')
         
-        # Create page-to-figure and page-to-table mappings for inline placement
-        figures_by_page = {}
-        for figure in paper.figures:
-            page = getattr(figure, 'page_num', 0)
-            if page not in figures_by_page:
-                figures_by_page[page] = []
-            figures_by_page[page].append(figure)
-        
-        tables_by_idx = {i: table for i, table in enumerate(paper.tables)}
-        table_idx = 0
-        
         # ============ SECTIONS ============
-        num_sections = len(paper.sections)
-        figures_per_section = len(paper.figures) // max(num_sections, 1) + 1
-        tables_per_section = len(paper.tables) // max(num_sections, 1) + 1
-        
-        figure_idx = 0
-        all_figures = list(paper.figures)
-        all_tables = list(paper.tables)
+        # Track which figures/tables have been placed
+        placed_figures = set()
+        placed_tables = set()
+        all_figures = {f.number: f for f in paper.figures}
+        all_tables = {t.number: t for t in paper.tables}
         
         for section_idx, section in enumerate(paper.sections):
             # Skip REFERENCES section - we output thebibliography separately
@@ -259,32 +246,55 @@ class LaTeXGenerator:
             
             # IEEE formatting: Primary headings in ALL CAPS, subsections in title-case
             if section.level == 1:
-                # Primary sections: Roman numerals, centered, ALL CAPS (handled by IEEEtran)
                 section_title = self.latex_escape(section.title.upper().rstrip(':'))
                 latex.append(f'\\section{{{section_title}}}')
             else:
-                # Subsections: italic, left-aligned, title-case (handled by IEEEtran)
                 section_title = self.latex_escape(self._to_title_case(section.title.rstrip(':')))
                 latex.append(f'\\subsection{{{section_title}}}')
             
             # Process content for citations, equations, and bullet points
             content = self._process_content(section.content)
-            latex.append(content)
+            
+            # === CRITICAL: Insert figures/tables at first reference ===
+            # Split content into paragraphs and insert floats after their references
+            paragraphs = content.split('\n\n')
+            processed_paragraphs = []
+            
+            for para in paragraphs:
+                processed_paragraphs.append(para)
+                
+                # Check for figure references in this paragraph
+                fig_refs = re.findall(r'Fig\.?\s*(\d+)|Figure\s*(\d+)', para, re.IGNORECASE)
+                for ref in fig_refs:
+                    fig_num = int(ref[0] or ref[1])
+                    if fig_num in all_figures and fig_num not in placed_figures:
+                        processed_paragraphs.append('')
+                        processed_paragraphs.append(self._format_figure(all_figures[fig_num], job_id))
+                        placed_figures.add(fig_num)
+                
+                # Check for table references in this paragraph
+                tbl_refs = re.findall(r'Table\s*([IVX]+|\d+)', para, re.IGNORECASE)
+                for ref in tbl_refs:
+                    tbl_num = self._roman_to_int(ref) if ref.isalpha() else int(ref)
+                    if tbl_num in all_tables and tbl_num not in placed_tables:
+                        processed_paragraphs.append('')
+                        processed_paragraphs.append(self._format_table(all_tables[tbl_num]))
+                        placed_tables.add(tbl_num)
+            
+            latex.append('\n\n'.join(processed_paragraphs))
             latex.append('')
-            
-            # Add any figures associated with this section (distributed evenly)
-            start_fig = section_idx * figures_per_section
-            end_fig = min(start_fig + figures_per_section, len(all_figures))
-            for i in range(start_fig, end_fig):
-                if i < len(all_figures):
-                    latex.append(self._format_figure(all_figures[i], job_id))
-            
-            # Add any tables associated with this section (distributed evenly)
-            start_tbl = section_idx * tables_per_section
-            end_tbl = min(start_tbl + tables_per_section, len(all_tables))
-            for i in range(start_tbl, end_tbl):
-                if i < len(all_tables):
-                    latex.append(self._format_table(all_tables[i]))
+        
+        # === CRITICAL: Place any remaining unplaced figures/tables ===
+        # These are figures/tables that weren't referenced in text
+        for fig_num in sorted(all_figures.keys()):
+            if fig_num not in placed_figures:
+                latex.append(self._format_figure(all_figures[fig_num], job_id))
+                placed_figures.add(fig_num)
+        
+        for tbl_num in sorted(all_tables.keys()):
+            if tbl_num not in placed_tables:
+                latex.append(self._format_table(all_tables[tbl_num]))
+                placed_tables.add(tbl_num)
         
         # ============ REFERENCES ============
         if paper.references:
@@ -1253,6 +1263,20 @@ email@example.com}
                 result += numeral
                 num -= value
         return result
+    
+    def _roman_to_int(self, roman: str) -> int:
+        """Convert Roman numeral to integer"""
+        roman_values = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+        total = 0
+        prev_value = 0
+        for char in reversed(roman.upper()):
+            value = roman_values.get(char, 0)
+            if value < prev_value:
+                total -= value
+            else:
+                total += value
+            prev_value = value
+        return total
     
     def _format_references(self, references: List[Reference]) -> str:
         """Format references in IEEE style with proper multi-line handling"""
