@@ -133,6 +133,20 @@ class LaTeXGenerator:
 % Fix column balancing
 \usepackage{balance}
 
+% === CRITICAL: Float Placement Control ===
+% Force figures/tables to stay near their text reference
+\usepackage{float}        % Provides [H] placement option
+\usepackage{placeins}     % Provides \FloatBarrier
+
+% Aggressive float parameters - prevent floats from moving to end
+\renewcommand{\topfraction}{0.9}      % Max fraction of page for floats at top
+\renewcommand{\bottomfraction}{0.9}   % Max fraction of page for floats at bottom
+\renewcommand{\textfraction}{0.1}     % Min fraction of page for text
+\renewcommand{\floatpagefraction}{0.8} % Min fraction for a float-only page
+\setcounter{topnumber}{3}             % Max floats at top of page
+\setcounter{bottomnumber}{3}          % Max floats at bottom of page
+\setcounter{totalnumber}{6}           % Max floats per page
+
 % === USER REQUESTED FORMATTING ===
 % Restore standard IEEE Roman numerals (I, II, III...)
 % IEEEtran class handles this automatically.
@@ -950,7 +964,7 @@ email@example.com}
         caption_text = self.latex_escape(raw_caption)
         
         latex = [
-            r'\begin{figure}[t!]',
+            r'\begin{figure}[H]',
             r'\centering',
         ]
         
@@ -1096,7 +1110,7 @@ email@example.com}
         table_env = 'table*' if is_wide_table else 'table'
         
         latex = [
-            f'\\begin{{{table_env}}}[htbp]',
+            f'\\begin{{{table_env}}}[H]',
             r'\centering',
         ]
         
@@ -1244,6 +1258,7 @@ email@example.com}
         """Format references in IEEE style with proper multi-line handling"""
         latex = [
             '',
+            r'\FloatBarrier',  # CRITICAL: Force all pending floats to be placed before references
             r'\begin{thebibliography}{99}',
         ]
         
