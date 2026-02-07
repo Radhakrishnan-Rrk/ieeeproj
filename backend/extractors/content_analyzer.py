@@ -690,9 +690,27 @@ class ContentAnalyzer:
             seen_titles.add(normalized_title)
             deduplicated.append(section)
         
-        # Merge all conclusion sections into one
+        # Merge all conclusion sections into one with paragraph deduplication
         if conclusion_sections:
-            merged_content = ' '.join([s.content for s in conclusion_sections if s.content])
+            # Collect all paragraphs and deduplicate
+            all_paragraphs = []
+            seen_paragraphs = set()
+            
+            for s in conclusion_sections:
+                if s.content:
+                    # Split into paragraphs
+                    paragraphs = re.split(r'\n\s*\n|\n(?=[A-Z])', s.content)
+                    for para in paragraphs:
+                        para = para.strip()
+                        if not para:
+                            continue
+                        # Normalize for comparison
+                        normalized = ' '.join(para.lower().split())[:100]  # First 100 chars
+                        if normalized not in seen_paragraphs:
+                            seen_paragraphs.add(normalized)
+                            all_paragraphs.append(para)
+            
+            merged_content = ' '.join(all_paragraphs)
             merged_conclusion = Section(
                 title="CONCLUSION",
                 content=merged_content,

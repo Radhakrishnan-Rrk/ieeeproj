@@ -411,6 +411,18 @@ email@example.com}
             normalized_lines.append(stripped)
         content = '\n'.join(normalized_lines)
         
+        # === CRITICAL: Deduplicate repeated sentences/paragraphs ===
+        # Split into sentences and remove exact duplicates
+        sentences = re.split(r'(?<=[.!?])\s+', content)
+        seen_sentences = set()
+        unique_sentences = []
+        for sentence in sentences:
+            normalized = ' '.join(sentence.lower().split())[:80]  # First 80 chars
+            if normalized and normalized not in seen_sentences:
+                seen_sentences.add(normalized)
+                unique_sentences.append(sentence)
+        content = ' '.join(unique_sentences)
+        
         # Try to use EquationHandler for better equation detection
         try:
             from parsers.equation_handler import EquationHandler
@@ -999,6 +1011,14 @@ email@example.com}
         caption = re.sub(r'^[IVX]+:?\s*', '', caption)
         caption = re.sub(r'^[A-Z]\.\s*', '', caption)  # E.g., "D. Confusion Matrix" -> "Confusion Matrix"
         
+        # === CRITICAL: Remove Roman numeral figure references ===
+        # Catch "Fig. III", "Fig IV", "Figure V" etc.
+        caption = re.sub(r'\bFig\.?\s*[IVX]+\.?\s*[-:]?\s*', '', caption, flags=re.IGNORECASE)
+        caption = re.sub(r'\bFigure\s*[IVX]+\.?\s*[-:]?\s*', '', caption, flags=re.IGNORECASE)
+        
+        # Remove standalone Roman numerals at start (V:, III:, etc.)
+        caption = re.sub(r'^[IVX]{1,4}:?\s+', '', caption)
+        
         # === CRITICAL FIX: Remove known placeholder captions ===
         placeholder_patterns = [
             r'From this qualitative study,?\s*it is evident that\s*(it is)?\.?',
@@ -1030,13 +1050,21 @@ email@example.com}
         caption = caption.strip()
         
         # Limit caption length to prevent very long merged captions
-        if len(caption) > 200:
-            # Find a good break point
+        # Increased to 350 to preserve complete descriptions
+        if len(caption) > 350:
+            # Find a good break point at sentence ending
             sentences = caption.split('.')
             if len(sentences) > 1:
-                caption = sentences[0].strip() + '.'
+                # Take complete sentences up to limit
+                result = ''
+                for s in sentences:
+                    if len(result) + len(s) + 1 < 340:
+                        result += s.strip() + '. '
+                    else:
+                        break
+                caption = result.strip() if result else caption[:347] + '...'
             else:
-                caption = caption[:197] + '...'
+                caption = caption[:347] + '...'
         
         # Ensure caption ends with proper punctuation (period for IEEE)
         if caption and not caption.endswith(('.', '!', '?')):
@@ -1076,21 +1104,26 @@ email@example.com}
         if is_wide_table:
             latex.append(r'\small')
         
-        # IEEE style: TABLE in small caps with Roman numeral
+        # IEEE style: TABLE with Roman numeral
         # Clean caption - remove any existing "Table X" or "TABLE I" prefix to avoid redundancy
         clean_caption = re.sub(r'^(Table|TABLE)\s*[IVX\d]+\.?\s*[-:]?\s*', '', caption, flags=re.IGNORECASE)
-        # Also remove if caption starts with the description itself containing TABLE
         clean_caption = re.sub(r'^TABLE\s*[IVX]+:?\s*', '', clean_caption, flags=re.IGNORECASE)
         clean_caption = clean_caption.strip()
         
-        # IEEE Format: "TABLE I" on its own line, then caption below
-        # Or use caption command properly
+        # CRITICAL FIX: Use \caption*{} (unnumbered) + manual formatting
+        # This prevents LaTeX from adding "Table 1:" automatically
+        # IEEE Format: "TABLE I" followed by description
+        if clean_caption:
+            caption_text = f'TABLE {table_num}\\\\{clean_caption}'
+        else:
+            caption_text = f'TABLE {table_num}'
+        
         latex.extend([
-            f'\\caption{{TABLE {table_num}: {clean_caption}}}',
+            f'\\caption*{{\\textsc{{{caption_text}}}}}',  # caption* = no auto-numbering
             f'\\label{{tab:{table.number}}}',
-            r'\renewcommand{\arraystretch}{1.3}',  # More spacing for readability
+            r'\renewcommand{\arraystretch}{1.3}',
             f'\\begin{{tabular}}{{{col_spec}}}',
-            r'\toprule',  # Top rule (booktabs)
+            r'\toprule',
         ])
         
         # Process rows
@@ -1102,6 +1135,25 @@ email@example.com}
             cleaned_cells = []
             for cell in padded_row:
                 cell_text = str(cell).replace('\n', ' ').replace('\r', ' ')
+                
+                # === CRITICAL: Fix character encoding issues ===
+                # Replace common Cyrillic lookalikes with ASCII equivalents
+                cyrillic_map = {
+                    'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'у': 'y', 'х': 'x',
+                    'А': 'A', 'В': 'B', 'Е': 'E', 'К': 'K', 'М': 'M', 'Н': 'H', 'О': 'O',
+                    'Р': 'P', 'С': 'C', 'Т': 'T', 'У': 'Y', 'Х': 'X',
+                    # Greek characters
+                    'α': 'a', 'β': 'b', 'γ': 'g', 'δ': 'd', 'ε': 'e',
+                    # Common corruption patterns
+                    '–': '-', '—': '-', ''': "'", ''': "'", '"': '"', '"': '"',
+                    '…': '...', '•': '-',
+                }
+                for cyr, asc in cyrillic_map.items():
+                    cell_text = cell_text.replace(cyr, asc)
+                
+                # Remove any remaining non-ASCII characters that could cause issues
+                cell_text = cell_text.encode('ascii', 'ignore').decode('ascii')
+                
                 cell_text = ' '.join(cell_text.split())  # Normalize whitespace
                 # Truncate very long cells to prevent overflow
                 if len(cell_text) > 100 and is_wide_table:
